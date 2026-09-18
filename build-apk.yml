@@ -1,0 +1,84 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract ZIP
+        run: |
+          set -e
+          ZIP=$(ls -1 NOVA_FF_ARENA_READY_TO_BUILD.zip 2>/dev/null | head -1)
+          if [ -z "$ZIP" ]; then ZIP=$(ls -1 *.zip 2>/dev/null | head -1); fi
+          echo "ZIP=$ZIP"
+          test -n "$ZIP"
+          rm -rf _p && unzip -q -o "$ZIP" -d _p
+          if [ -d _p/NOVA_FF_ARENA_FINAL ]; then cp -a _p/NOVA_FF_ARENA_FINAL/. .; else
+            SRC=$(find _p -name pubspec.yaml | head -1 | xargs dirname)
+            cp -a "$SRC"/. .
+          fi
+          rm -rf _p
+          test -f pubspec.yaml
+          echo "Extracted OK"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Reset Android folder
+        run: |
+          set -e
+          rm -rf android
+          flutter create . --platforms=android --project-name nova_ff_arena --org com.novaffarena
+          python3 -c "
+          from pathlib import Path
+          Path('android/settings.gradle').write_text('''pluginManagement {
+              def flutterSdkPath = {
+                  def properties = new Properties()
+                  file(\"local.properties\").withInputStream { properties.load(it) }
+                  def path = properties.getProperty(\"flutter.sdk\")
+                  assert path != null, \"flutter.sdk not set in local.properties\"
+                  return path
+              }()
+              includeBuild(\"\$flutterSdkPath/packages/flutter_tools/gradle\")
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          plugins {
+              id \"dev.flutter.flutter-plugin-loader\" version \"1.0.0\"
+              id \"com.android.application\" version \"8.7.3\" apply false
+              id \"org.jetbrains.kotlin.android\" version \"2.0.21\" apply false
+          }
+          include \":app\"
+          ''')
+          print(Path('android/settings.gradle').read_text())
+          "
+          if [ -f android/app/build.gradle ]; then
+            sed -i 's/applicationId *= *.*/applicationId = "com.novaffarena.nfa"/' android/app/build.gradle || true
+          fi
+
+      - run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --debug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nova-ff-arena-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
